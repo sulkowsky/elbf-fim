@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ebpf-loader
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ebpf-monitor-sa
+  namespace: ebpf-loader
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ebpf-monitor-role
+  labels:
+    app: ebpf-loader
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods", "namespaces"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list"]
+- apiGroups: ["*"]
+  resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ebpf-monitor-role-binding
+subjects:
+- kind: ServiceAccount
+  name: ebpf-monitor-sa
+  namespace: ebpf-loader
+roleRef:
+  kind: ClusterRole
+  name: ebpf-monitor-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ebpf-monitor
+  namespace: ebpf-loader
+spec:
+  selector:
+    matchLabels:
+      app: ebpf-monitor
+  template:
+    metadata:
+      labels:
+        app: ebpf-monitor
+    spec:
+      serviceAccountName: ebpf-monitor-sa
+      containers:
+      - name: ebpf-loader
+        image: rsulkowski/ebpf-loader:latest
+        securityContext:
+          privileged: true  # Required for eBPF
+          capabilities:
+            add:
+              - DAC_OVERRIDE
+              - DAC_READ_SEARCH
+              - FOWNER
+              - SETGID
+              - SETUID
+              - SYS_ADMIN
+              - SYS_PTRACE
+              - SYS_RESOURCE
+              - SYSLOG
+              - SYS_CHROOT
+              - CHOWN
+              - SYS_MODULE
+              - KILL
+              - NET_ADMIN
+              - NET_RAW
+        volumeMounts:
+        - mountPath: /host-etc
+          name: host-etc
+          readOnly: true
+        - mountPath: /sys
+          name: sys
+          readOnly: true
+        - mountPath: /lib/modules
+          name: lib-modules
+          readOnly: true
+      volumes:
+      - name: host-etc
+        hostPath:
+          path: /etc
+          type: Directory
+      - name: sys
+        hostPath:
+          path: /sys
+          type: Directory
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+          type: Directory
+      terminationGracePeriodSeconds: 30
